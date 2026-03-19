@@ -74,6 +74,15 @@ class VoterLoginView(APIView):
         if error:
             return Response({"detail": error}, status=status.HTTP_401_UNAUTHORIZED)
 
+        # ✅ Issue #1 fixed - guard against missing voter profile
+        try:
+            voter_card_number = user.voter_profile.voter_card_number
+        except User.voter_profile.RelatedObjectDoesNotExist:
+            return Response(
+                {"detail": "Voter profile not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         refresh = RefreshToken.for_user(user)
         return Response({
             "access": str(refresh.access_token),
@@ -81,7 +90,7 @@ class VoterLoginView(APIView):
             "user": {
                 "id": user.id,
                 "full_name": user.get_full_name(),
-                "voter_card_number": user.voter_profile.voter_card_number,
+                "voter_card_number": voter_card_number,
                 "role": user.role,
             },
         })
@@ -95,8 +104,15 @@ class VoterRegistrationView(APIView):
         serializer = VoterRegistrationSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        service = VoterRegistrationService()
-        profile = service.register(serializer.validated_data)
+        # ✅ Issue #6 fixed - handle exceptions from service.register cleanly
+        try:
+            service = VoterRegistrationService()
+            profile = service.register(serializer.validated_data)
+        except Exception as e:
+            return Response(
+                {"detail": "Registration failed. Please try again."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(
             {
@@ -111,7 +127,16 @@ class VoterProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        serializer = VoterProfileSerializer(request.user.voter_profile)
+        # ✅ Issue #2 fixed - guard against missing voter profile
+        try:
+            profile = request.user.voter_profile
+        except Exception:
+            return Response(
+                {"detail": "Voter profile not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = VoterProfileSerializer(profile)
         return Response(serializer.data)
 
 
@@ -149,7 +174,10 @@ class VoterVerifyView(APIView):
 
     def post(self, request, pk):
         service = VoterManagementService()
-        service.verify(pk, request.user)
+        # ✅ Issue #3 fixed - unpack tuple and handle error
+        user, error = service.verify(pk, request.user)
+        if error:
+            return Response({"detail": error}, status=status.HTTP_404_NOT_FOUND)
         return Response({"detail": "Voter verified successfully."})
 
 
@@ -167,10 +195,10 @@ class VoterDeactivateView(APIView):
 
     def post(self, request, pk):
         service = VoterManagementService()
-        try:
-            service.deactivate(pk, request.user)
-        except User.DoesNotExist:
-            return Response({"detail": "Voter not found."}, status=status.HTTP_404_NOT_FOUND)
+        # ✅ Issue #4 fixed - use tuple unpacking instead of try/except
+        user, error = service.deactivate(pk, request.user)
+        if error:
+            return Response({"detail": error}, status=status.HTTP_404_NOT_FOUND)
         return Response({"detail": "Voter deactivated."})
 
 
@@ -212,5 +240,8 @@ class AdminDeactivateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         service = AdminManagementService()
-        service.deactivate(pk, request.user)
+        # ✅ Issue #5 fixed - unpack tuple and handle error
+        admin_user, error = service.deactivate(pk, request.user)
+        if error:
+            return Response({"detail": error}, status=status.HTTP_404_NOT_FOUND)
         return Response({"detail": "Admin deactivated."})
