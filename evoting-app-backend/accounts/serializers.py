@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date  
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -11,8 +11,6 @@ User = get_user_model()
 
 
 class UserSerializer(serializers.ModelSerializer):
-    full_name = serializers.SerializerMethodField()
-
     class Meta:
         model = User
         fields = [
@@ -21,9 +19,12 @@ class UserSerializer(serializers.ModelSerializer):
             "password",
         ]
         read_only_fields = ["id", "date_joined"]
+        extra_kwargs = {
+            "password": {"write_only": True}
+        }
 
     def get_full_name(self, obj):
-        return obj.first_name + " " + obj.last_name
+    return obj.get_full_name()
 
 
 class VoterProfileSerializer(serializers.ModelSerializer):
@@ -50,17 +51,25 @@ class VoterLoginSerializer(serializers.Serializer):
     password = serializers.CharField()
 
 
-class VoterRegistrationSerializer(serializers.Serializer):
-    full_name = serializers.CharField(max_length=200)
-    national_id = serializers.CharField(max_length=50)
-    date_of_birth = serializers.DateField()
-    gender = serializers.ChoiceField(choices=VoterProfile.Gender.choices)
-    address = serializers.CharField()
-    phone = serializers.CharField(max_length=20)
-    email = serializers.EmailField()
-    station_id = serializers.IntegerField()
-    password = serializers.CharField(min_length=6, write_only=True)
-    confirm_password = serializers.CharField(min_length=6, write_only=True)
+def validate_full_name(self, value):
+    parts = value.strip().split(" ", 1)  # split into at most 2 parts
+    if len(parts) < 2:
+        raise serializers.ValidationError(
+            "Please provide both first and last name."
+        )
+    return value  # keep original, we'll use it in the view
+
+def validate(self, data):
+    if data["password"] != data["confirm_password"]:
+        raise serializers.ValidationError("Passwords do not match.")
+    
+    # Split full_name (from Issue #3)
+    parts = data["full_name"].strip().split(" ", 1)
+    data["first_name"] = parts[0]
+    data["last_name"] = parts[1]
+
+    data.pop("confirm_password")  #  remove before data leaves the serializer
+    return data
 
     def validate_national_id(self, value):
         if VoterProfile.objects.filter(national_id=value).exists():
@@ -68,13 +77,15 @@ class VoterRegistrationSerializer(serializers.Serializer):
         return value
 
     def validate_date_of_birth(self, value):
-        today = date.today()
-        age = today.year - value.year
-        if age < 18:
-            raise serializers.ValidationError(
-                "You must be at least 18 years old."
-            )
-        return value
+    today = date.today()
+    age = today.year - value.year - (
+        (today.month, today.day) < (value.month, value.day)
+    )
+    if age < 18:
+        raise serializers.ValidationError(
+            "You must be at least 18 years old."
+        )
+    return value
 
     def validate_station_id(self, value):
         if not VotingStation.objects.filter(pk=value).exists():
@@ -118,12 +129,21 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 
 class VoterListSerializer(serializers.ModelSerializer):
-    full_name = serializers.SerializerMethodField()
-    voter_card_number = serializers.CharField(source="voter_profile.voter_card_number")
-    station_id = serializers.IntegerField(source="voter_profile.station_id")
-    age = serializers.ReadOnlyField(source="voter_profile.age")
-    gender = serializers.CharField(source="voter_profile.gender")
-    national_id = serializers.CharField(source="voter_profile.national_id")
+    voter_card_number = serializers.CharField(
+        source="voter_profile.voter_card_number", allow_null=True, default=None
+    )
+    station_id = serializers.IntegerField(
+        source="voter_profile.station_id", allow_null=True, default=None
+    )
+    age = serializers.ReadOnlyField(
+        source="voter_profile.age", default=None
+    )
+    gender = serializers.CharField(
+        source="voter_profile.gender", allow_null=True, default=None
+    )
+    national_id = serializers.CharField(
+        source="voter_profile.national_id", allow_null=True, default=None
+    )
 
     class Meta:
         model = User
@@ -132,9 +152,8 @@ class VoterListSerializer(serializers.ModelSerializer):
             "station_id", "age", "gender", "is_verified", "is_active",
         ]
 
-    def get_full_name(self, obj):
-        return obj.get_full_name()
-
+  def get_full_name(self, obj):
+    return obj.get_full_name()
 
 class AdminListSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
@@ -144,4 +163,4 @@ class AdminListSerializer(serializers.ModelSerializer):
         fields = ["id", "username", "full_name", "email", "role", "is_active", "date_joined"]
 
     def get_full_name(self, obj):
-        return obj.first_name + " " + obj.last_name
+        return obj.get_full_name()  
