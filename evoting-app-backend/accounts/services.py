@@ -65,6 +65,7 @@ class VoterRegistrationService:
     def __init__(self):
         self._audit = AuditService()
 
+    @transaction.atomic  #  Issue #1 fixed - rolls back user if profile creation fails
     def register(self, validated_data):
         names = validated_data["full_name"].split(" ", 1)
         station = VotingStation.objects.get(pk=validated_data["station_id"])
@@ -122,7 +123,11 @@ class AdminManagementService:
         return user
 
     def deactivate(self, admin_id, deactivated_by):
-        admin_user = User.objects.get(pk=admin_id)
+        try:  # Issue #2 fixed - handle missing admin gracefully
+            admin_user = User.objects.get(pk=admin_id)
+        except User.DoesNotExist:
+            return None, "Admin user not found."
+
         admin_user.is_active = False
         admin_user.save()
         self._audit.log(
@@ -130,7 +135,7 @@ class AdminManagementService:
             deactivated_by.username,
             f"Deactivated admin: {admin_user.username}",
         )
-        return admin_user
+        return admin_user, None
 
 
 class VoterManagementService:
@@ -138,7 +143,11 @@ class VoterManagementService:
         self._audit = AuditService()
 
     def verify(self, voter_id, verified_by):
-        user = User.objects.get(pk=voter_id)
+        try:  #  Issue #2 fixed - handle missing voter gracefully
+            user = User.objects.get(pk=voter_id)
+        except User.DoesNotExist:
+            return None, "Voter not found."
+
         user.is_verified = True
         user.save(update_fields=["is_verified"])
         self._audit.log(
@@ -146,8 +155,9 @@ class VoterManagementService:
             verified_by.username,
             f"Verified voter: {user.get_full_name()}",
         )
-        return user
+        return user, None
 
+    @transaction.atomic  #  Issue #3 fixed - bulk update is now atomic
     def verify_all_pending(self, verified_by):
         unverified = User.objects.filter(is_verified=False)
         count = unverified.update(is_verified=True)
@@ -159,7 +169,11 @@ class VoterManagementService:
         return count
 
     def deactivate(self, voter_id, deactivated_by):
-        user = User.objects.get(pk=voter_id, role=User.Role.VOTER)
+        try:  #  Issue #2 fixed - handle missing voter gracefully
+            user = User.objects.get(pk=voter_id, role=User.Role.VOTER)
+        except User.DoesNotExist:
+            return None, "Voter not found."
+
         user.is_active = False
         user.save(update_fields=["is_active"])
         self._audit.log(
@@ -167,13 +181,17 @@ class VoterManagementService:
             deactivated_by.username,
             f"Deactivated voter: {user.get_full_name()}",
         )
-        return user
+        return user, None
 
     def search(self, query_params):
         qs = User.objects.filter(role=User.Role.VOTER).select_related("voter_profile")
 
         if name := query_params.get("name"):
-            qs = qs.filter(first_name__icontains=name) | qs.filter(last_name__icontains=name)
+            qs = (
+                qs.filter(first_name__icontains=name) |
+                qs.filter(last_name__icontains=name)
+            ).distinct()  #  Issue #4 fixed - prevent duplicate results
+
         if card := query_params.get("card"):
             qs = qs.filter(voter_profile__voter_card_number=card)
         if nid := query_params.get("national_id"):
